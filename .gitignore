@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+google_credentials.json
+*.json
+!products.json
+!pharmacies.json
+C:\Users\*
+MR_Reports/inbox/*
+MR_Reports/processed/*
+MR_Reports/failed/*
+pipeline.log
+/tmp/
+.DS_Store
