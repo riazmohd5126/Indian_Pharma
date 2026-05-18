@@ -44,7 +44,7 @@ SERVICE_ACCOUNT_JSON = r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credenti
 #       20260309/          ← date folder (YYYYMMDD or DD-MM-YYYY)
 #         photo1.jpg
 #         photo2.jpg
-DRIVE_ROOT_FOLDER_NAME = "medicine sales"
+DRIVE_ROOT_FOLDER_NAME = "MR_Pipeline_Input"
 
 # ── 4. BUSINESS RULES ───────────────────────────────────────
 # Your product master catalog — helps Gemini normalize names
