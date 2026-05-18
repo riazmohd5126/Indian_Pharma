@@ -3,75 +3,52 @@ main.py
 ───────────────────────────────────────────────────
 MR Field Report Pipeline — Main Entry Point
 
-HOW IT WORKS (local inbox mode):
-  1. Watches WATCH_FOLDER/inbox/ for new files
-  2. Groups files by date prefix (e.g. 20260309_*)
-  3. Parses text files as EOD reports
-  4. Parses image files as order slips
-  5. Links slips to EOD report
-  6. Writes to Google Sheets
-  7. Moves files to processed/ or failed/
-
-HOW IT WORKS (--drive mode):
-  1. Connects to Google Drive → "medicine sales" folder
-  2. Walks MR subfolders → date subfolders → photos
-  3. Downloads photos to a temp folder
-  4. Parses as order slips and writes to Google Sheets
-
-FILE NAMING CONVENTION FOR MRs (local mode):
-  Text EOD reports:  YYYYMMDD_MRName_EOD.txt
-                     e.g. 20260309_Tanzeem_EOD.txt
-  Order slip images: YYYYMMDD_MRName_SlipN.jpg
-                     e.g. 20260309_Tanzeem_Slip1.jpg
+SOURCE: Google Drive → MR_Pipeline_Input/
+  Structure:
+    MR_Pipeline_Input/
+      Surendra/
+        2026-05-07/      ← upload photos here
+          photo1.jpg
+          photo2.jpg
+        2026-05-08/
+      Tanzeem Ahmad/
+        2026-05-07/
 
 HOW TO RUN:
-  python main.py                      ← watches local inbox continuously
-  python main.py --once               ← process local inbox once and exit
-  python main.py --test               ← parse local files, print output (no Sheets write)
-  python main.py --drive              ← fetch from Google Drive and write to Sheets
-  python main.py --drive --test       ← fetch from Drive, print output (no Sheets write)
-  python main.py --drive --date 20260309  ← Drive fetch for a specific date only
+  python main.py                      ← process all new Drive batches (default)
+  python main.py --test               ← parse and print output, no Sheets write
+  python main.py --date 20260507      ← process only this date across all MRs
+  python main.py --mr Surendra        ← process only this MR (all dates)
+  python main.py --reprocess          ← ignore processed log, redo everything
+  python main.py --local              ← fallback: use local inbox/ folder instead
 """
 
-import os
 import sys
-import time
-import shutil
 import json
+import shutil
 from pathlib import Path
 from datetime import datetime
 
-from config import WATCH_FOLDER
+from config import WATCH_FOLDER, PIPELINE_STATE_FILE
 from gemini_parser import parse_eod_report, parse_order_slip, link_slips_to_report
 from sheets_writer import write_eod_report, write_order_slips
 from drive_fetcher import fetch_drive_groups
 
-# ── FOLDER SETUP ─────────────────────────────────────────────
+# ── PATHS ────────────────────────────────────────────────────
+SCRIPT_DIR = Path(__file__).parent
+STATE_FILE = SCRIPT_DIR / PIPELINE_STATE_FILE
+LOG_FILE   = SCRIPT_DIR / "pipeline.log"
+
+# Local inbox paths (--local mode only)
 INBOX     = Path(WATCH_FOLDER) / "inbox"
 PROCESSED = Path(WATCH_FOLDER) / "processed"
 FAILED    = Path(WATCH_FOLDER) / "failed"
-LOG_FILE  = Path(WATCH_FOLDER) / "pipeline.log"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 TEXT_EXTS  = {".txt"}
 
 
-def setup_folders():
-    for folder in [INBOX, PROCESSED, FAILED]:
-        folder.mkdir(parents=True, exist_ok=True)
-    print(f"""
-╔══════════════════════════════════════════════════╗
-║   MR PIPELINE — STARTED                         ║
-╠══════════════════════════════════════════════════╣
-║  Drop files into:                               ║
-║  {str(INBOX):<44} ║
-╠══════════════════════════════════════════════════╣
-║  File naming:                                   ║
-║  EOD text:  20260309_MRName_EOD.txt             ║
-║  Slip photo: 20260309_MRName_Slip1.jpg          ║
-╚══════════════════════════════════════════════════╝
-""")
-
+# ── LOGGING ──────────────────────────────────────────────────
 
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -81,190 +58,207 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def group_files_by_mr_date(files: list) -> dict:
-    """
-    Group inbox files by (date, mr_name) key.
-    Returns: { "20260309_Tanzeem": {"eod": Path, "slips": [Path]} }
-    """
-    groups = {}
-    for f in files:
-        stem = f.stem  # e.g. 20260309_Tanzeem_EOD
-        parts = stem.split("_")
-        if len(parts) < 2:
-            continue
-        date_str = parts[0]
-        mr_name  = parts[1]
-        key = f"{date_str}_{mr_name}"
+# ── PROCESSED STATE ──────────────────────────────────────────
 
-        if key not in groups:
-            groups[key] = {"eod": None, "slips": [], "key": key}
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+    return {}
 
-        name_upper = stem.upper()
-        if f.suffix.lower() in TEXT_EXTS and "EOD" in name_upper:
-            groups[key]["eod"] = f
-        elif f.suffix.lower() in IMAGE_EXTS:
-            groups[key]["slips"].append(f)
 
-    return groups
+def save_state(state: dict):
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
+
+def mark_done(state: dict, key: str, slips: int, drive_path: str):
+    state[key] = {
+        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "slips":        slips,
+        "status":       "done",
+        "drive_path":   drive_path,
+    }
+    save_state(state)
+
+
+def mark_error(state: dict, key: str, error: str, drive_path: str):
+    state[key] = {
+        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status":       "error",
+        "error":        error,
+        "drive_path":   drive_path,
+    }
+    save_state(state)
+
+
+# ── CORE PROCESSING ──────────────────────────────────────────
 
 def process_group(group: dict, test_mode: bool = False, eod_override: dict = None):
-    """Process one MR's files for one day.
-
-    eod_override: pre-built eod stub used in Drive mode (no text file).
-    """
-    key       = group["key"]
-    eod_file  = group["eod"]
+    """Process one MR's slip photos for one day."""
+    key        = group["key"]
+    eod_file   = group.get("eod")
     slip_files = group["slips"]
 
-    log(f"Processing group: {key}  (EOD: {'yes' if eod_file else 'NO'}, Slips: {len(slip_files)})")
+    log(f"Processing: {key}  ({len(slip_files)} slip(s))")
 
-    eod_data  = eod_override  # may be None in local mode, pre-filled in Drive mode
+    eod_data  = eod_override
     slip_data = []
 
-    # ── Parse EOD report ─────────────────────────────────────
+    # Parse EOD text report if present (local mode)
     if eod_file:
         log(f"  Parsing EOD report: {eod_file.name}")
         text = eod_file.read_text(encoding="utf-8")
         eod_data = parse_eod_report(text)
         eod_data["source_file"] = eod_file.name
-
         if test_mode:
             print("\n── EOD PARSE RESULT ──")
             print(json.dumps(eod_data, indent=2))
 
-    # ── Parse order slips ─────────────────────────────────────
+    # Parse each order slip image
     for slip_f in slip_files:
-        log(f"  Parsing slip image: {slip_f.name}")
+        log(f"  Parsing slip: {slip_f.name}")
         result = parse_order_slip(str(slip_f))
-
         if test_mode:
-            print(f"\n── SLIP PARSE: {slip_f.name} ──")
+            print(f"\n── SLIP: {slip_f.name} ──")
             print(json.dumps(result, indent=2))
-
         slip_data.append(result)
 
-    # ── Link slips to EOD ────────────────────────────────────
+    # Link slips to EOD if available
     if eod_data and slip_data:
-        eod_data = link_slips_to_report(eod_data, slip_data)
+        eod_data     = link_slips_to_report(eod_data, slip_data)
         linked_slips = eod_data.get("matched_slips", []) + eod_data.get("unmatched_slips", [])
-        unlinked     = eod_data.get("unmatched_slips", [])
-        log(f"  Linked: {len(linked_slips)} slips matched, {len(unlinked)} unmatched")
+        unmatched    = eod_data.get("unmatched_slips", [])
+        log(f"  Linked {len(linked_slips)} slip(s), {len(unmatched)} unmatched")
     else:
-        linked_slips = slip_data  # Write all slips regardless
+        linked_slips = slip_data
 
-    # ── Write to Sheets ──────────────────────────────────────
+    # Write to Google Sheets
     if not test_mode:
         if eod_data:
-            result = write_eod_report(eod_data, eod_file.name if eod_file else "")
+            write_eod_report(eod_data, eod_file.name if eod_file else "")
         if linked_slips:
             mr_name  = eod_data.get("mr_name", "") if eod_data else ""
-            eod_date = eod_data.get("date", "") if eod_data else ""
+            eod_date = eod_data.get("date", "")    if eod_data else ""
             write_order_slips(linked_slips, mr_name, eod_date)
     else:
-        log("  [TEST MODE] Skipping Sheets write")
+        log("  [TEST] Skipping Sheets write")
 
-    # ── Move files to processed/ or failed/ ─────────────────
-    if not test_mode:
-        dest_folder = PROCESSED / key
-        dest_folder.mkdir(parents=True, exist_ok=True)
-
-        all_files = ([eod_file] if eod_file else []) + slip_files
-        for f in all_files:
-            shutil.move(str(f), str(dest_folder / f.name))
+    # Move local files after processing (local mode only)
+    if not test_mode and eod_file:
+        dest = PROCESSED / key
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in ([eod_file] if eod_file else []) + slip_files:
+            shutil.move(str(f), str(dest / f.name))
             log(f"  Moved {f.name} → processed/{key}/")
 
 
-def process_inbox(test_mode: bool = False):
-    """Scan inbox, group files, process each group."""
-    files = [f for f in INBOX.iterdir()
-             if f.is_file() and f.suffix.lower() in IMAGE_EXTS | TEXT_EXTS]
+# ── DRIVE MODE (default) ──────────────────────────────────────
 
-    if not files:
+def run_drive(test_mode: bool = False, target_date: str = None,
+              target_mr: str = None, reprocess: bool = False):
+    """Fetch from Google Drive and process all new MR/date batches."""
+
+    state = {} if reprocess else load_state()
+
+    log("Scanning Google Drive: MR_Pipeline_Input/")
+    try:
+        groups = fetch_drive_groups(target_date=target_date, target_mr=target_mr)
+    except FileNotFoundError as e:
+        log(f"ERROR: {e}")
         return
-
-    log(f"Found {len(files)} file(s) in inbox")
-    groups = group_files_by_mr_date(files)
 
     if not groups:
-        log("Could not group files — check naming convention")
+        log("No photos found in Google Drive.")
         return
+
+    new_groups = {k: v for k, v in groups.items()
+                  if reprocess or state.get(k, {}).get("status") != "done"}
+
+    skipped = len(groups) - len(new_groups)
+    log(f"Found {len(groups)} batch(es) — {len(new_groups)} new, {skipped} already processed")
+
+    if not new_groups:
+        log("Nothing to do. Use --reprocess to force reprocessing.")
+        return
+
+    for key, group in new_groups.items():
+        drive_path = group.get("drive_path", "")
+        try:
+            eod_stub = {
+                "mr_name":       group.get("mr_name", ""),
+                "date":          group.get("date", ""),
+                "working_area":  [],
+                "matched_slips": [],
+                "confidence":    1.0,
+            }
+            process_group(group, test_mode=test_mode, eod_override=eod_stub)
+            if not test_mode:
+                mark_done(state, key, len(group["slips"]), drive_path)
+                log(f"  ✓ {key} marked as done")
+        except Exception as e:
+            log(f"ERROR processing {key}: {e}")
+            if not test_mode:
+                mark_error(state, key, str(e), drive_path)
+
+
+# ── LOCAL MODE (--local fallback) ────────────────────────────
+
+def run_local(test_mode: bool = False):
+    """Process files from the local inbox/ folder."""
+    for folder in [INBOX, PROCESSED, FAILED]:
+        folder.mkdir(parents=True, exist_ok=True)
+
+    files = [f for f in INBOX.iterdir()
+             if f.is_file() and f.suffix.lower() in IMAGE_EXTS | TEXT_EXTS]
+    if not files:
+        log("Local inbox is empty.")
+        return
+
+    log(f"Found {len(files)} file(s) in local inbox")
+    groups = {}
+    for f in files:
+        parts = f.stem.split("_")
+        if len(parts) < 2:
+            log(f"  ⚠ Skipping (bad name): {f.name}")
+            continue
+        key = f"{parts[0]}_{parts[1]}"
+        if key not in groups:
+            groups[key] = {"key": key, "eod": None, "slips": []}
+        name_upper = f.stem.upper()
+        if f.suffix.lower() in TEXT_EXTS and "EOD" in name_upper:
+            groups[key]["eod"] = f
+        elif f.suffix.lower() in IMAGE_EXTS:
+            groups[key]["slips"].append(f)
 
     for key, group in groups.items():
         try:
             process_group(group, test_mode=test_mode)
         except Exception as e:
             log(f"ERROR processing {key}: {e}")
-            # Move to failed
             for f in ([group["eod"]] if group["eod"] else []) + group["slips"]:
                 if f and f.exists():
                     shutil.move(str(f), str(FAILED / f.name))
 
 
-def process_drive(test_mode: bool = False, target_date: str = None):
-    """Fetch photos from Google Drive and process each MR/date group."""
-    log(f"Fetching from Google Drive — folder: 'medicine sales'"
-        + (f", date filter: {target_date}" if target_date else " (all dates)"))
-
-    try:
-        groups = fetch_drive_groups(target_date=target_date)
-    except FileNotFoundError as e:
-        log(f"ERROR: {e}")
-        return
-
-    if not groups:
-        log("No files found in Google Drive for the given criteria.")
-        return
-
-    log(f"Found {len(groups)} group(s) in Drive")
-
-    for key, group in groups.items():
-        try:
-            # Enrich eod_data stub from Drive metadata so write_order_slips has context
-            drive_eod_stub = {
-                "mr_name":      group.get("mr_name", ""),
-                "date":         group.get("date", ""),
-                "working_area": [],
-                "matched_slips": [],
-                "confidence":   1.0,
-            }
-            process_group(group, test_mode=test_mode, eod_override=drive_eod_stub)
-        except Exception as e:
-            log(f"ERROR processing {key}: {e}")
-
-
 # ── ENTRY POINT ──────────────────────────────────────────────
+
 if __name__ == "__main__":
-    setup_folders()
-
     args = sys.argv[1:]
-    test_mode   = "--test"  in args
-    once_mode   = "--once"  in args
-    drive_mode  = "--drive" in args
 
-    # Optional: --date 20260309
-    target_date = None
-    if "--date" in args:
-        idx = args.index("--date")
-        if idx + 1 < len(args):
-            target_date = args[idx + 1]
+    test_mode  = "--test"       in args
+    reprocess  = "--reprocess"  in args
+    local_mode = "--local"      in args
+
+    target_date = args[args.index("--date") + 1] if "--date" in args else None
+    target_mr   = args[args.index("--mr")   + 1] if "--mr"   in args else None
 
     if test_mode:
-        log("Running in TEST MODE — no Sheets write, output printed to console")
+        log("TEST MODE — Sheets write skipped, processed log not updated")
 
-    if drive_mode:
-        log("Running in DRIVE MODE — fetching photos from Google Drive")
-        process_drive(test_mode=test_mode, target_date=target_date)
-        log("Done.")
-    elif once_mode or test_mode:
-        process_inbox(test_mode=test_mode)
-        log("Done.")
+    if local_mode:
+        log("LOCAL MODE — reading from local inbox/")
+        run_local(test_mode=test_mode)
     else:
-        log("Watching local inbox... (Ctrl+C to stop)")
-        while True:
-            try:
-                process_inbox()
-                time.sleep(30)
-            except KeyboardInterrupt:
-                log("Stopped by user.")
-                break
+        run_drive(test_mode=test_mode, target_date=target_date,
+                  target_mr=target_mr, reprocess=reprocess)
+
+    log("Done.")

@@ -3,21 +3,22 @@ drive_fetcher.py
 Fetches WhatsApp order slip photos from Google Drive.
 
 Expected Drive structure:
-    medicine sales/
+    MR_Pipeline_Input/
+        Surendra/
+            2026-05-07/      ← date folder (any format: YYYY-MM-DD, YYYYMMDD, DD-MM-YYYY)
+                photo1.jpg
+                photo2.jpg
+            2026-05-08/
         Tanzeem Ahmad/
-            20260309/        ← date folder (YYYYMMDD or DD-MM-YYYY)
-                img1.jpg
-                img2.jpg
-            20260310/
-                ...
+            2026-05-07/
 
 Usage:
     from drive_fetcher import fetch_drive_groups
-    groups = fetch_drive_groups(target_date="20260309")
-    # returns: { "20260309_Tanzeem": {"eod": None, "slips": ["/tmp/.../img.jpg"], "key": ...} }
+    groups = fetch_drive_groups()
+    groups = fetch_drive_groups(target_date="20260507")
+    groups = fetch_drive_groups(target_mr="Surendra")
 """
 
-import io
 import re
 import tempfile
 from pathlib import Path
@@ -106,20 +107,23 @@ def _normalize_date(raw: str) -> str | None:
     return None
 
 
-def fetch_drive_groups(target_date: str = None) -> dict:
+def fetch_drive_groups(target_date: str = None, target_mr: str = None) -> dict:
     """
     Walk the Google Drive folder tree and download images into temp dirs.
 
     Args:
-        target_date: optional YYYYMMDD string to process only one date.
-                     If None, fetches all dates.
+        target_date: optional YYYYMMDD to process only one date across all MRs.
+        target_mr:   optional MR name (case-insensitive) to process only one MR.
 
-    Returns dict in the same format that main.py's group_files_by_mr_date() produces:
+    Returns:
         {
-          "20260309_Tanzeem": {
-              "key":   "20260309_Tanzeem",
-              "eod":   None,           # Drive mode has no EOD text file
-              "slips": [Path(...), ...]
+          "20260507_Surendra": {
+              "key":        "20260507_Surendra",
+              "eod":        None,
+              "slips":      [Path(...), ...],
+              "mr_name":    "Surendra",
+              "date":       "20260507",
+              "drive_path": "MR_Pipeline_Input/Surendra/2026-05-07",
           },
           ...
         }
@@ -142,12 +146,15 @@ def fetch_drive_groups(target_date: str = None) -> dict:
 
     for mr_folder in mr_folders:
         mr_name = mr_folder["name"].strip()
-        # Use the first word as the short key (matches YYYYMMDD_Tanzeem convention)
+
+        if target_mr and target_mr.lower() not in mr_name.lower():
+            continue
+
         mr_key_part = mr_name.split()[0] if mr_name else mr_name
 
         date_folders = _list_folders(service, mr_folder["id"])
         for date_folder in date_folders:
-            raw_date  = date_folder["name"].strip()
+            raw_date      = date_folder["name"].strip()
             date_yyyymmdd = _normalize_date(raw_date)
 
             if not date_yyyymmdd:
@@ -161,13 +168,11 @@ def fetch_drive_groups(target_date: str = None) -> dict:
             if not images:
                 continue
 
-            # Download to a temp directory (cleaned up by OS on reboot)
-            tmp_dir = Path(tempfile.mkdtemp(prefix=f"mr_{date_yyyymmdd}_{mr_key_part}_"))
+            tmp_dir    = Path(tempfile.mkdtemp(prefix=f"mr_{date_yyyymmdd}_{mr_key_part}_"))
             downloaded = []
             for img in images:
-                ext  = Path(img["name"]).suffix.lower() or ".jpg"
                 dest = tmp_dir / img["name"]
-                print(f"    ↓ Downloading {mr_name}/{raw_date}/{img['name']}")
+                print(f"    ↓ {mr_name}/{raw_date}/{img['name']}")
                 _download(service, img["id"], str(dest))
                 downloaded.append(dest)
 

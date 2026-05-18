@@ -39,12 +39,20 @@ SERVICE_ACCOUNT_JSON = r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credenti
 # ── 5. GOOGLE DRIVE SOURCE FOLDER ───────────────────────────
 # Top-level folder name in Google Drive where MR photos are stored.
 # Structure expected:
-#   medicine sales/
-#     Tanzeem Ahmad/
-#       20260309/          ← date folder (YYYYMMDD or DD-MM-YYYY)
+#   MR_Pipeline_Input/
+#     Surendra/               ← MR name folder
+#       2026-05-07/           ← date folder (any format: YYYY-MM-DD, YYYYMMDD, DD-MM-YYYY)
 #         photo1.jpg
 #         photo2.jpg
+#       2026-05-08/
+#     Tanzeem Ahmad/
+#       2026-05-07/
+#         photo1.jpg
 DRIVE_ROOT_FOLDER_NAME = "MR_Pipeline_Input"
+
+# Tracks which MR/date batches have already been processed.
+# Stored next to this script so it persists across runs.
+PIPELINE_STATE_FILE = "pipeline_state.json"
 
 # ── 4. BUSINESS RULES ───────────────────────────────────────
 # Your product master catalog — helps Gemini normalize names
