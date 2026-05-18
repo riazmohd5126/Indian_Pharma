@@ -3,7 +3,7 @@ main.py
 ───────────────────────────────────────────────────
 MR Field Report Pipeline — Main Entry Point
 
-HOW IT WORKS:
+HOW IT WORKS (local inbox mode):
   1. Watches WATCH_FOLDER/inbox/ for new files
   2. Groups files by date prefix (e.g. 20260309_*)
   3. Parses text files as EOD reports
@@ -12,17 +12,25 @@ HOW IT WORKS:
   6. Writes to Google Sheets
   7. Moves files to processed/ or failed/
 
-FILE NAMING CONVENTION FOR MRs:
+HOW IT WORKS (--drive mode):
+  1. Connects to Google Drive → "medicine sales" folder
+  2. Walks MR subfolders → date subfolders → photos
+  3. Downloads photos to a temp folder
+  4. Parses as order slips and writes to Google Sheets
+
+FILE NAMING CONVENTION FOR MRs (local mode):
   Text EOD reports:  YYYYMMDD_MRName_EOD.txt
                      e.g. 20260309_Tanzeem_EOD.txt
   Order slip images: YYYYMMDD_MRName_SlipN.jpg
                      e.g. 20260309_Tanzeem_Slip1.jpg
-                          20260309_Tanzeem_Slip2.jpg
 
 HOW TO RUN:
-  python main.py          ← watches folder continuously
-  python main.py --once   ← process inbox once and exit
-  python main.py --test   ← parse files and print output (no Sheets write)
+  python main.py                      ← watches local inbox continuously
+  python main.py --once               ← process local inbox once and exit
+  python main.py --test               ← parse local files, print output (no Sheets write)
+  python main.py --drive              ← fetch from Google Drive and write to Sheets
+  python main.py --drive --test       ← fetch from Drive, print output (no Sheets write)
+  python main.py --drive --date 20260309  ← Drive fetch for a specific date only
 """
 
 import os
@@ -36,6 +44,7 @@ from datetime import datetime
 from config import WATCH_FOLDER
 from gemini_parser import parse_eod_report, parse_order_slip, link_slips_to_report
 from sheets_writer import write_eod_report, write_order_slips
+from drive_fetcher import fetch_drive_groups
 
 # ── FOLDER SETUP ─────────────────────────────────────────────
 INBOX     = Path(WATCH_FOLDER) / "inbox"
@@ -99,16 +108,19 @@ def group_files_by_mr_date(files: list) -> dict:
     return groups
 
 
-def process_group(group: dict, test_mode: bool = False):
-    """Process one MR's files for one day."""
+def process_group(group: dict, test_mode: bool = False, eod_override: dict = None):
+    """Process one MR's files for one day.
+
+    eod_override: pre-built eod stub used in Drive mode (no text file).
+    """
     key       = group["key"]
     eod_file  = group["eod"]
     slip_files = group["slips"]
 
     log(f"Processing group: {key}  (EOD: {'yes' if eod_file else 'NO'}, Slips: {len(slip_files)})")
 
-    eod_data   = None
-    slip_data  = []
+    eod_data  = eod_override  # may be None in local mode, pre-filled in Drive mode
+    slip_data = []
 
     # ── Parse EOD report ─────────────────────────────────────
     if eod_file:
@@ -189,26 +201,70 @@ def process_inbox(test_mode: bool = False):
                     shutil.move(str(f), str(FAILED / f.name))
 
 
+def process_drive(test_mode: bool = False, target_date: str = None):
+    """Fetch photos from Google Drive and process each MR/date group."""
+    log(f"Fetching from Google Drive — folder: 'medicine sales'"
+        + (f", date filter: {target_date}" if target_date else " (all dates)"))
+
+    try:
+        groups = fetch_drive_groups(target_date=target_date)
+    except FileNotFoundError as e:
+        log(f"ERROR: {e}")
+        return
+
+    if not groups:
+        log("No files found in Google Drive for the given criteria.")
+        return
+
+    log(f"Found {len(groups)} group(s) in Drive")
+
+    for key, group in groups.items():
+        try:
+            # Enrich eod_data stub from Drive metadata so write_order_slips has context
+            drive_eod_stub = {
+                "mr_name":      group.get("mr_name", ""),
+                "date":         group.get("date", ""),
+                "working_area": [],
+                "matched_slips": [],
+                "confidence":   1.0,
+            }
+            process_group(group, test_mode=test_mode, eod_override=drive_eod_stub)
+        except Exception as e:
+            log(f"ERROR processing {key}: {e}")
+
+
 # ── ENTRY POINT ──────────────────────────────────────────────
 if __name__ == "__main__":
     setup_folders()
 
     args = sys.argv[1:]
-    test_mode  = "--test" in args
-    once_mode  = "--once" in args
+    test_mode   = "--test"  in args
+    once_mode   = "--once"  in args
+    drive_mode  = "--drive" in args
+
+    # Optional: --date 20260309
+    target_date = None
+    if "--date" in args:
+        idx = args.index("--date")
+        if idx + 1 < len(args):
+            target_date = args[idx + 1]
 
     if test_mode:
         log("Running in TEST MODE — no Sheets write, output printed to console")
 
-    if once_mode or test_mode:
+    if drive_mode:
+        log("Running in DRIVE MODE — fetching photos from Google Drive")
+        process_drive(test_mode=test_mode, target_date=target_date)
+        log("Done.")
+    elif once_mode or test_mode:
         process_inbox(test_mode=test_mode)
         log("Done.")
     else:
-        log("Watching inbox... (Ctrl+C to stop)")
+        log("Watching local inbox... (Ctrl+C to stop)")
         while True:
             try:
                 process_inbox()
-                time.sleep(30)   # Check every 30 seconds
+                time.sleep(30)
             except KeyboardInterrupt:
                 log("Stopped by user.")
                 break

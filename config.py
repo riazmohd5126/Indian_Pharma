@@ -33,7 +33,18 @@ SHEET_EXCEPTIONS    = "exception_queue"
 #   https://console.cloud.google.com → IAM → Service Accounts
 #   Enable: Google Sheets API + Google Drive API
 #   Share your Google Sheet with the service account email
+#   Share your "medicine sales" Drive folder with the service account email
 SERVICE_ACCOUNT_JSON = r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credentials.json"
+
+# ── 5. GOOGLE DRIVE SOURCE FOLDER ───────────────────────────
+# Top-level folder name in Google Drive where MR photos are stored.
+# Structure expected:
+#   medicine sales/
+#     Tanzeem Ahmad/
+#       20260309/          ← date folder (YYYYMMDD or DD-MM-YYYY)
+#         photo1.jpg
+#         photo2.jpg
+DRIVE_ROOT_FOLDER_NAME = "medicine sales"
 
 # ── 4. BUSINESS RULES ───────────────────────────────────────
 # Your product master catalog — helps Gemini normalize names
@@ -98,6 +109,6 @@ MR_REGISTRY = {
 # Confidence threshold — below this goes to exception queue
 CONFIDENCE_THRESHOLD = 0.3
 
-# ── 5. ALERTS (optional for later) ──────────────────────────
+# ── 6. ALERTS (optional for later) ──────────────────────────
 # EOD report expected by this hour (24h format)
 EOD_DEADLINE_HOUR = 20  # 8 PM
