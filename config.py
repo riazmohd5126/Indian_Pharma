@@ -3,9 +3,13 @@
 #  Fill in your keys before running
 # ============================================================
 
+import os
+
 # ── 1. GEMINI API KEY ────────────────────────────────────────
 # Get free key at: https://aistudio.google.com/app/apikey
-GEMINI_API_KEY = "AIzaSyCLbPUinUWQ1wN0l7Oq4EAGb_-WbGFtGkU"
+# Set via environment variable: export GEMINI_API_KEY=your_key
+# Falls back to the value below if env var not set.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDRYdUofycNWJyH-H1MIsI01VVmYZPDYHw")
 
 # ── 2. LOCAL WATCH FOLDER ───────────────────────────────────
 # Create this folder on your laptop. Drop photos + text files here.

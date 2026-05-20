@@ -101,21 +101,14 @@ def test_gemini():
             fail("Gemini text ping", str(e))
             return
 
-        # Image parse test — uses a minimal 1x1 white JPEG
+        # Image parse test — uses a real slip already downloaded, or generates a tiny PNG
         try:
-            import base64
-            # Smallest valid JPEG (1x1 white pixel)
-            minimal_jpg = base64.b64decode(
-                "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkS"
-                "Ew8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJ"
-                "CQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy"
-                "MjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFgABAQEAAAAAAAAA"
-                "AAAAAAAABgUH/8QAIBAAAgIBBQEBAAAAAAAAAAAAAQIDBAUREiExQf/EABQBAQAAA"
-                "AAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKiW"
-                "qPK3RRZEiNJIkcas7sFUe5J8AetM3C8K3M1pEiRpGuyONQqqPsAAAAB4AAA/9k="
-            )
+            from PIL import Image as PILImage
+            import io as _io
             tmp = Path("/tmp/test_pixel.jpg")
-            tmp.write_bytes(minimal_jpg)
+            img = PILImage.new("RGB", (100, 100), color=(255, 255, 255))
+            img.save(str(tmp), "JPEG")
+
 
             from gemini_parser import parse_order_slip
             result = parse_order_slip(str(tmp))
