@@ -2,6 +2,7 @@
 sheets_writer.py  — clean rewrite with proper column order
 """
 
+import json
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
@@ -102,7 +103,7 @@ def write_eod_report(data: dict, source_file: str = "") -> str:
         "Auto-Approved"
     ]
     ws.append_row(row)
-    print(f"  ✓ EOD report written — {data.get(chr(109)+chr(114)+'_name')} | {data.get('date')}")
+    print(f"  ✓ EOD report written — {data.get('mr_name')} | {data.get('date')}")
     return "written"
 
 
@@ -156,7 +157,6 @@ def _write_exception(data: dict, data_type: str, source_file: str, confidence: f
     sheet = _get_sheet()
     ws = _ensure_tab(sheet, SHEET_EXCEPTIONS, EXCEPTION_HEADERS)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    import json
     row = [
         ts, data_type,
         data.get("mr_name", "") or data.get("customer_name", ""),
