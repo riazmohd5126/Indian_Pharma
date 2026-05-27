@@ -1,5 +1,5 @@
 """
-sheets_writer.py  — clean rewrite with proper column order
+sheets_writer.py
 """
 
 import json
@@ -7,8 +7,9 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 from config import (GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON,
-                    SHEET_DAILY_REPORTS, SHEET_ORDERS,
-                    SHEET_EXCEPTIONS, CONFIDENCE_THRESHOLD)
+                    SHEET_DAILY_REPORTS, SHEET_ORDERS, SHEET_EXCEPTIONS,
+                    SHEET_MR_TRACKING, SHEET_MR_SUMMARY,
+                    CONFIDENCE_THRESHOLD)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -34,6 +35,17 @@ EXCEPTION_HEADERS = [
     "Timestamp", "Type", "MR Name", "Date",
     "Source File", "Confidence", "Error/Issue",
     "Raw Data", "Status"
+]
+
+MR_TRACKING_HEADERS = [
+    "Date", "MR Name", "HQ", "Working Area", "Working With",
+    "TC", "PC", "POB (Rs)", "Km Travelled", "Stockist",
+    "Slips Filed", "Orders Booked", "Timestamp"
+]
+
+MR_SUMMARY_HEADERS = [
+    "MR Name", "Month", "Total TC", "Total PC", "Total POB (Rs)",
+    "Working Days", "Total Slips", "Total Orders", "Last Updated"
 ]
 
 
@@ -151,6 +163,84 @@ def write_order_slips(slips: list, eod_mr: str = "", eod_date: str = "") -> int:
 
     print(f"  ✓ {rows_written} order line(s) written to sheets")
     return rows_written
+
+
+def write_mr_tracking(eod_data: dict, slip_count: int, order_count: int):
+    """Write one daily activity row per MR to the mr_tracking tab."""
+    sheet = _get_sheet()
+    ws = _ensure_tab(sheet, SHEET_MR_TRACKING, MR_TRACKING_HEADERS)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    row = [
+        eod_data.get("date", ""),
+        eod_data.get("mr_name", ""),
+        eod_data.get("hq", ""),
+        ", ".join(eod_data.get("working_area", [])),
+        eod_data.get("working_with", "Self"),
+        eod_data.get("tc", 0),
+        eod_data.get("pc", 0),
+        eod_data.get("pob", 0),
+        eod_data.get("km_travelled", ""),
+        eod_data.get("stockist", ""),
+        slip_count,
+        order_count,
+        ts,
+    ]
+    ws.append_row(row)
+    print(f"  ✓ MR tracking written — {eod_data.get('mr_name')} | {eod_data.get('date')}")
+
+
+def write_mr_summary(eod_data: dict, slip_count: int, order_count: int):
+    """Upsert monthly summary row per MR in the mr_summary tab."""
+    sheet = _get_sheet()
+    ws = _ensure_tab(sheet, SHEET_MR_SUMMARY, MR_SUMMARY_HEADERS)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    mr_name = eod_data.get("mr_name", "")
+    date_str = eod_data.get("date", "")
+    try:
+        month = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m")
+    except Exception:
+        month = date_str[:7] if len(date_str) >= 7 else date_str
+
+    # Find existing row for this MR + month to update it
+    all_rows = ws.get_all_values()
+    target_row_idx = None
+    for i, row in enumerate(all_rows[1:], start=2):  # skip header
+        if len(row) >= 2 and row[0] == mr_name and row[1] == month:
+            target_row_idx = i
+            break
+
+    if target_row_idx:
+        existing = all_rows[target_row_idx - 1]
+        def _int(v):
+            try: return int(str(v).replace(",", ""))
+            except: return 0
+        new_row = [
+            mr_name, month,
+            _int(existing[2]) + (eod_data.get("tc") or 0),
+            _int(existing[3]) + (eod_data.get("pc") or 0),
+            _int(existing[4]) + (eod_data.get("pob") or 0),
+            _int(existing[5]) + 1,
+            _int(existing[6]) + slip_count,
+            _int(existing[7]) + order_count,
+            ts,
+        ]
+        ws.update(f"A{target_row_idx}:I{target_row_idx}", [new_row])
+        print(f"  ✓ MR summary updated — {mr_name} | {month}")
+    else:
+        row = [
+            mr_name, month,
+            eod_data.get("tc", 0),
+            eod_data.get("pc", 0),
+            eod_data.get("pob", 0),
+            1,
+            slip_count,
+            order_count,
+            ts,
+        ]
+        ws.append_row(row)
+        print(f"  ✓ MR summary created — {mr_name} | {month}")
 
 
 def _write_exception(data: dict, data_type: str, source_file: str, confidence: float):

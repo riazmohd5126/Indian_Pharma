@@ -122,7 +122,12 @@ MR_REGISTRY = {
 }
 
 # Confidence threshold — below this goes to exception queue
-CONFIDENCE_THRESHOLD = 0.3
+# 0.05 filters only actual parse errors; handwritten slips often score 0.1–0.4
+CONFIDENCE_THRESHOLD = 0.05
+
+# Google Sheets tab names for MR tracking
+SHEET_MR_TRACKING = "mr_tracking"
+SHEET_MR_SUMMARY  = "mr_summary"
 
 # ── 6. ALERTS (optional for later) ──────────────────────────
 # EOD report expected by this hour (24h format)

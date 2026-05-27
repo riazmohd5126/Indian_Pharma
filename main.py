@@ -31,7 +31,7 @@ from datetime import datetime
 
 from config import WATCH_FOLDER, PIPELINE_STATE_FILE
 from gemini_parser import parse_eod_report, parse_order_slip, link_slips_to_report
-from sheets_writer import write_eod_report, write_order_slips
+from sheets_writer import write_eod_report, write_order_slips, write_mr_tracking, write_mr_summary
 from drive_fetcher import fetch_drive_groups
 
 # ── PATHS ────────────────────────────────────────────────────
@@ -133,12 +133,17 @@ def process_group(group: dict, test_mode: bool = False, eod_override: dict = Non
 
     # Write to Google Sheets
     if not test_mode:
+        mr_name    = eod_data.get("mr_name", "") if eod_data else ""
+        eod_date   = eod_data.get("date", "")    if eod_data else ""
+        order_count = 0
+
         if eod_data:
             write_eod_report(eod_data, eod_file.name if eod_file else "")
         if linked_slips:
-            mr_name  = eod_data.get("mr_name", "") if eod_data else ""
-            eod_date = eod_data.get("date", "")    if eod_data else ""
-            write_order_slips(linked_slips, mr_name, eod_date)
+            order_count = write_order_slips(linked_slips, mr_name, eod_date)
+        if eod_data:
+            write_mr_tracking(eod_data, len(slip_files), order_count)
+            write_mr_summary(eod_data, len(slip_files), order_count)
     else:
         log("  [TEST] Skipping Sheets write")
 
