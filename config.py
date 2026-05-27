@@ -9,7 +9,7 @@ import os
 # Get free key at: https://aistudio.google.com/app/apikey
 # Set via environment variable: export GEMINI_API_KEY=your_key
 # Falls back to the value below if env var not set.
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDRYdUofycNWJyH-H1MIsI01VVmYZPDYHw")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # ── 2. LOCAL WATCH FOLDER ───────────────────────────────────
 # Create this folder on your laptop. Drop photos + text files here.
@@ -38,7 +38,10 @@ SHEET_EXCEPTIONS    = "exception_queue"
 #   Enable: Google Sheets API + Google Drive API
 #   Share your Google Sheet with the service account email
 #   Share your "medicine sales" Drive folder with the service account email
-SERVICE_ACCOUNT_JSON = r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credentials.json"
+SERVICE_ACCOUNT_JSON = os.environ.get(
+    "SERVICE_ACCOUNT_JSON",
+    r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credentials.json"
+)
 
 # ── 5. GOOGLE DRIVE SOURCE FOLDER ───────────────────────────
 # Top-level folder name in Google Drive where MR photos are stored.
@@ -115,7 +118,7 @@ PRODUCT_CATALOG = [
 # Your MR team — maps WhatsApp sender names to MR records
 MR_REGISTRY = {
     "Tanzeem Ahmad": {"hq": "Moradabad", "territory": ["Dalpatpur", "Karanpur"]},
-    # Add more MRs here
+    "Surendra":      {"hq": "Moradabad", "territory": ["Dalpatpur", "Munda Pandey", "Sihora Baje", "Karanpur"]},
 }
 
 # Confidence threshold — below this goes to exception queue

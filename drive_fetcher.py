@@ -24,9 +24,11 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
+import httplib2
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
+from google_auth_httplib2 import AuthorizedHttp
 
 from config import SERVICE_ACCOUNT_JSON, DRIVE_ROOT_FOLDER_NAME
 
@@ -38,11 +40,16 @@ SCOPES = [
 IMAGE_MIMES = {
     "image/jpeg", "image/jpg", "image/png", "image/webp"
 }
+TEXT_MIMES = {
+    "text/plain"
+}
 
 
 def _drive_service():
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=SCOPES)
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    # Disable SSL verification to handle self-signed certs in cloud environments
+    http = AuthorizedHttp(creds, http=httplib2.Http(disable_ssl_certificate_validation=True))
+    return build("drive", "v3", http=http, cache_discovery=False)
 
 
 def _find_folder(service, name: str, parent_id: str = None) -> dict | None:
@@ -68,6 +75,16 @@ def _list_folders(service, parent_id: str) -> list[dict]:
 def _list_images(service, parent_id: str) -> list[dict]:
     """List all image files inside a folder."""
     mime_filter = " or ".join(f"mimeType='{m}'" for m in IMAGE_MIMES)
+    q = f"'{parent_id}' in parents and trashed=false and ({mime_filter})"
+    res = service.files().list(
+        q=q, fields="files(id, name, mimeType)", pageSize=200
+    ).execute()
+    return res.get("files", [])
+
+
+def _list_texts(service, parent_id: str) -> list[dict]:
+    """List all plain-text EOD report files inside a folder."""
+    mime_filter = " or ".join(f"mimeType='{m}'" for m in TEXT_MIMES)
     q = f"'{parent_id}' in parents and trashed=false and ({mime_filter})"
     res = service.files().list(
         q=q, fields="files(id, name, mimeType)", pageSize=200
@@ -165,26 +182,35 @@ def fetch_drive_groups(target_date: str = None, target_mr: str = None) -> dict:
                 continue
 
             images = _list_images(service, date_folder["id"])
-            if not images:
+            texts  = _list_texts(service, date_folder["id"])
+
+            if not images and not texts:
                 continue
 
             tmp_dir    = Path(tempfile.mkdtemp(prefix=f"mr_{date_yyyymmdd}_{mr_key_part}_"))
             downloaded = []
+            eod_file   = None
+
             for img in images:
                 dest = tmp_dir / img["name"]
                 print(f"    ↓ {mr_name}/{raw_date}/{img['name']}")
                 _download(service, img["id"], str(dest))
                 downloaded.append(dest)
 
-            if downloaded:
-                key = f"{date_yyyymmdd}_{mr_key_part}"
-                groups[key] = {
-                    "key":        key,
-                    "eod":        None,
-                    "slips":      downloaded,
-                    "mr_name":    mr_name,
-                    "date":       date_yyyymmdd,
-                    "drive_path": f"{DRIVE_ROOT_FOLDER_NAME}/{mr_name}/{raw_date}",
-                }
+            for txt in texts:
+                dest = tmp_dir / "eod_report.txt"
+                print(f"    ↓ {mr_name}/{raw_date}/{txt['name']} (EOD)")
+                _download(service, txt["id"], str(dest))
+                eod_file = dest
+
+            key = f"{date_yyyymmdd}_{mr_key_part}"
+            groups[key] = {
+                "key":        key,
+                "eod":        eod_file,
+                "slips":      downloaded,
+                "mr_name":    mr_name,
+                "date":       date_yyyymmdd,
+                "drive_path": f"{DRIVE_ROOT_FOLDER_NAME}/{mr_name}/{raw_date}",
+            }
 
     return groups
