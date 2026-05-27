@@ -11,7 +11,7 @@ from google.genai import types
 from config import GEMINI_API_KEY, PRODUCT_CATALOG
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL  = "gemini-2.5-flash-lite"
+MODEL  = "gemini-2.0-flash"
 
 CATALOG_STR = "\n".join(f"  - {p}" for p in PRODUCT_CATALOG)
 
@@ -97,6 +97,7 @@ def parse_eod_report(text: str) -> dict:
         data["parse_type"] = "eod_report"
         return data
     except Exception as e:
+        print(f"  ERROR parsing EOD: {e}")
         return {"parse_type": "eod_report", "error": str(e), "confidence": 0.0, "raw_text": text}
 
 
@@ -122,6 +123,7 @@ def parse_order_slip(image_path: str) -> dict:
         data["source_file"] = Path(image_path).name
         return data
     except Exception as e:
+        print(f"  ERROR parsing slip {Path(image_path).name}: {e}")
         return {"parse_type": "order_slip", "error": str(e),
                 "confidence": 0.0, "source_file": Path(image_path).name}
 

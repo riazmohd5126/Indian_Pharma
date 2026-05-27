@@ -24,9 +24,11 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
+import httplib2
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
+from google_auth_httplib2 import AuthorizedHttp
 
 from config import SERVICE_ACCOUNT_JSON, DRIVE_ROOT_FOLDER_NAME
 
@@ -45,7 +47,9 @@ TEXT_MIMES = {
 
 def _drive_service():
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=SCOPES)
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    # Disable SSL verification to handle self-signed certs in cloud environments
+    http = AuthorizedHttp(creds, http=httplib2.Http(disable_ssl_certificate_validation=True))
+    return build("drive", "v3", http=http, cache_discovery=False)
 
 
 def _find_folder(service, name: str, parent_id: str = None) -> dict | None:

@@ -38,7 +38,10 @@ SHEET_EXCEPTIONS    = "exception_queue"
 #   Enable: Google Sheets API + Google Drive API
 #   Share your Google Sheet with the service account email
 #   Share your "medicine sales" Drive folder with the service account email
-SERVICE_ACCOUNT_JSON = r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credentials.json"
+SERVICE_ACCOUNT_JSON = os.environ.get(
+    "SERVICE_ACCOUNT_JSON",
+    r"/Users/riazmohd/Downloads/mr_pipeline 2/google_credentials.json"
+)
 
 # ── 5. GOOGLE DRIVE SOURCE FOLDER ───────────────────────────
 # Top-level folder name in Google Drive where MR photos are stored.
@@ -115,11 +118,16 @@ PRODUCT_CATALOG = [
 # Your MR team — maps WhatsApp sender names to MR records
 MR_REGISTRY = {
     "Tanzeem Ahmad": {"hq": "Moradabad", "territory": ["Dalpatpur", "Karanpur"]},
-    # Add more MRs here
+    "Surendra":      {"hq": "Moradabad", "territory": ["Dalpatpur", "Munda Pandey", "Sihora Baje", "Karanpur"]},
 }
 
 # Confidence threshold — below this goes to exception queue
-CONFIDENCE_THRESHOLD = 0.3
+# 0.05 filters only actual parse errors; handwritten slips often score 0.1–0.4
+CONFIDENCE_THRESHOLD = 0.05
+
+# Google Sheets tab names for MR tracking
+SHEET_MR_TRACKING = "mr_tracking"
+SHEET_MR_SUMMARY  = "mr_summary"
 
 # ── 6. ALERTS (optional for later) ──────────────────────────
 # EOD report expected by this hour (24h format)
