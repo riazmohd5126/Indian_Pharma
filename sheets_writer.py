@@ -5,7 +5,8 @@ sheets_writer.py
 import json
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime
+from datetime import datetime, date
+import calendar
 from config import (GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON,
                     SHEET_DAILY_REPORTS, SHEET_ORDERS, SHEET_EXCEPTIONS,
                     SHEET_MR_TRACKING, SHEET_MR_SUMMARY,
@@ -37,15 +38,25 @@ EXCEPTION_HEADERS = [
     "Raw Data", "Status"
 ]
 
-MR_TRACKING_HEADERS = [
-    "Date", "MR Name", "HQ", "Working Area", "Working With",
-    "TC", "PC", "POB (Rs)", "Km Travelled", "Stockist",
-    "Slips Filed", "Orders Booked", "Timestamp"
+# Matches existing sheet structure
+MR_SUMMARY_HEADERS = [
+    "MR Name", "Month", "Monthly Target (Rs)", "POB Achieved (Rs)",
+    "Achievement %", "Days Worked", "Working Days in Month", "Days Remaining",
+    "Daily Avg POB", "Required Daily POB", "Projected Month End POB",
+    "On Track?", "TC Total", "PC Total", "PC Rate %"
 ]
 
-MR_SUMMARY_HEADERS = [
-    "MR Name", "Month", "Total TC", "Total PC", "Total POB (Rs)",
-    "Working Days", "Total Slips", "Total Orders", "Last Updated"
+MR_TRACKING_HEADERS = [
+    "MR Name", "Month", "Monthly Target (Rs)", "Total Working Days",
+    "Working Days Elapsed", "Working Days Remaining", "Days MR Reported",
+    "Days MR Absent (no report)", "POB Achieved (Rs)", "Achievement %",
+    "Daily Avg POB (reported days)", "Required POB Per Day (remaining)",
+    "Projected Month End (if avg continues)", "Projected Achievement %",
+    "On Track?", "Shortfall / Surplus (Rs)", "TC Total", "PC Total", "PC Rate %"
+]
+
+MR_TARGETS_HEADERS = [
+    "MR Name", "Monthly Target (Rs)", "Month", "Working Days"
 ]
 
 
@@ -85,9 +96,51 @@ def _ensure_tab(sheet, tab_name, headers):
     return ws
 
 
+def _to_int(v):
+    try:
+        return int(str(v).replace(",", "").replace("₹", "").strip())
+    except Exception:
+        return 0
+
+
+def _working_days_in_month(year: int, month: int) -> int:
+    """Count Mon–Sat days (6-day work week typical in Indian pharma)."""
+    _, total = calendar.monthrange(year, month)
+    count = 0
+    for d in range(1, total + 1):
+        if date(year, month, d).weekday() < 6:  # Mon=0 … Sat=5
+            count += 1
+    return count
+
+
+def _working_days_elapsed(year: int, month: int) -> int:
+    """Count Mon–Sat days from start of month up to today."""
+    today = date.today()
+    last_day = min(today.day, calendar.monthrange(year, month)[1])
+    count = 0
+    for d in range(1, last_day + 1):
+        if date(year, month, d).weekday() < 6:
+            count += 1
+    return count
+
+
+def _get_monthly_target(sheet, mr_name: str, month: str) -> int:
+    """Look up monthly target from mr_targets tab. Returns 0 if not found."""
+    try:
+        ws = sheet.worksheet("mr_targets")
+        rows = ws.get_all_values()
+        for row in rows[1:]:
+            if len(row) >= 2 and row[0].strip().lower() == mr_name.strip().lower():
+                # row[2] = Month (may be YYYY-MM or empty for default)
+                if len(row) < 3 or not row[2] or row[2] == month or row[2] == "":
+                    return _to_int(row[1])
+    except Exception:
+        pass
+    return 0
+
+
 def write_eod_report(data: dict, source_file: str = "") -> str:
     confidence = data.get("confidence", 0.0)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     if confidence < CONFIDENCE_THRESHOLD or "error" in data:
         _write_exception(data, "eod_report", source_file, confidence)
@@ -96,6 +149,7 @@ def write_eod_report(data: dict, source_file: str = "") -> str:
     sheet = _get_sheet()
     ws = _ensure_tab(sheet, SHEET_DAILY_REPORTS, DAILY_HEADERS)
     slip_count = len(data.get("matched_slips", []))
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     row = [
         data.get("date", ""),
@@ -166,80 +220,131 @@ def write_order_slips(slips: list, eod_mr: str = "", eod_date: str = "") -> int:
 
 
 def write_mr_tracking(eod_data: dict, slip_count: int, order_count: int):
-    """Write one daily activity row per MR to the mr_tracking tab."""
+    """Upsert monthly MR tracking row with actuals vs targets and projections."""
     sheet = _get_sheet()
     ws = _ensure_tab(sheet, SHEET_MR_TRACKING, MR_TRACKING_HEADERS)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    row = [
-        eod_data.get("date", ""),
-        eod_data.get("mr_name", ""),
-        eod_data.get("hq", ""),
-        ", ".join(eod_data.get("working_area", [])),
-        eod_data.get("working_with", "Self"),
-        eod_data.get("tc", 0),
-        eod_data.get("pc", 0),
-        eod_data.get("pob", 0),
-        eod_data.get("km_travelled", ""),
-        eod_data.get("stockist", ""),
-        slip_count,
-        order_count,
-        ts,
+    mr_name  = eod_data.get("mr_name", "")
+    date_str = eod_data.get("date", "")
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        month = dt.strftime("%Y-%m")
+        year, mon = dt.year, dt.month
+    except Exception:
+        month = date_str[:7] if len(date_str) >= 7 else date_str
+        year, mon = int(month[:4]), int(month[5:7])
+
+    monthly_target    = _get_monthly_target(sheet, mr_name, month)
+    total_work_days   = _working_days_in_month(year, mon)
+    elapsed_days      = _working_days_elapsed(year, mon)
+    remaining_days    = max(total_work_days - elapsed_days, 0)
+
+    # Read existing row to accumulate totals
+    all_rows = ws.get_all_values()
+    existing_row_idx = None
+    for i, row in enumerate(all_rows[1:], start=2):
+        if len(row) >= 2 and row[0].strip() == mr_name and row[1].strip() == month:
+            existing_row_idx = i
+            break
+
+    if existing_row_idx:
+        er = all_rows[existing_row_idx - 1]
+        days_reported = _to_int(er[6]) + 1
+        pob_achieved  = _to_int(er[8])  + (eod_data.get("pob") or 0)
+        tc_total      = _to_int(er[16]) + (eod_data.get("tc") or 0)
+        pc_total      = _to_int(er[17]) + (eod_data.get("pc") or 0)
+    else:
+        days_reported = 1
+        pob_achieved  = eod_data.get("pob") or 0
+        tc_total      = eod_data.get("tc") or 0
+        pc_total      = eod_data.get("pc") or 0
+
+    days_absent       = max(elapsed_days - days_reported, 0)
+    achievement_pct   = round(pob_achieved / monthly_target * 100, 1) if monthly_target else 0
+    daily_avg         = round(pob_achieved / days_reported, 0) if days_reported else 0
+    req_per_day       = round((monthly_target - pob_achieved) / remaining_days, 0) if remaining_days else 0
+    projected_end     = round(pob_achieved + daily_avg * remaining_days, 0)
+    proj_ach_pct      = round(projected_end / monthly_target * 100, 1) if monthly_target else 0
+    on_track          = "Yes" if projected_end >= monthly_target else "No"
+    shortfall_surplus = projected_end - monthly_target
+    pc_rate           = round(pc_total / tc_total * 100, 1) if tc_total else 0
+
+    new_row = [
+        mr_name, month, monthly_target, total_work_days,
+        elapsed_days, remaining_days, days_reported, days_absent,
+        pob_achieved, achievement_pct, daily_avg, req_per_day,
+        projected_end, proj_ach_pct, on_track, shortfall_surplus,
+        tc_total, pc_total, pc_rate
     ]
-    ws.append_row(row)
-    print(f"  ✓ MR tracking written — {eod_data.get('mr_name')} | {eod_data.get('date')}")
+
+    if existing_row_idx:
+        ws.update(f"A{existing_row_idx}:S{existing_row_idx}", [new_row])
+        print(f"  ✓ MR tracking updated — {mr_name} | {month}")
+    else:
+        ws.append_row(new_row)
+        print(f"  ✓ MR tracking created — {mr_name} | {month}")
 
 
 def write_mr_summary(eod_data: dict, slip_count: int, order_count: int):
-    """Upsert monthly summary row per MR in the mr_summary tab."""
+    """Upsert monthly summary row per MR with achievement vs target."""
     sheet = _get_sheet()
     ws = _ensure_tab(sheet, SHEET_MR_SUMMARY, MR_SUMMARY_HEADERS)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    mr_name = eod_data.get("mr_name", "")
+    mr_name  = eod_data.get("mr_name", "")
     date_str = eod_data.get("date", "")
     try:
-        month = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m")
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        month = dt.strftime("%Y-%m")
+        year, mon = dt.year, dt.month
     except Exception:
         month = date_str[:7] if len(date_str) >= 7 else date_str
+        year, mon = int(month[:4]), int(month[5:7])
 
-    # Find existing row for this MR + month to update it
+    monthly_target  = _get_monthly_target(sheet, mr_name, month)
+    total_work_days = _working_days_in_month(year, mon)
+    elapsed_days    = _working_days_elapsed(year, mon)
+    remaining_days  = max(total_work_days - elapsed_days, 0)
+
     all_rows = ws.get_all_values()
-    target_row_idx = None
-    for i, row in enumerate(all_rows[1:], start=2):  # skip header
-        if len(row) >= 2 and row[0] == mr_name and row[1] == month:
-            target_row_idx = i
+    existing_row_idx = None
+    for i, row in enumerate(all_rows[1:], start=2):
+        if len(row) >= 2 and row[0].strip() == mr_name and row[1].strip() == month:
+            existing_row_idx = i
             break
 
-    if target_row_idx:
-        existing = all_rows[target_row_idx - 1]
-        def _int(v):
-            try: return int(str(v).replace(",", ""))
-            except: return 0
-        new_row = [
-            mr_name, month,
-            _int(existing[2]) + (eod_data.get("tc") or 0),
-            _int(existing[3]) + (eod_data.get("pc") or 0),
-            _int(existing[4]) + (eod_data.get("pob") or 0),
-            _int(existing[5]) + 1,
-            _int(existing[6]) + slip_count,
-            _int(existing[7]) + order_count,
-            ts,
-        ]
-        ws.update(f"A{target_row_idx}:I{target_row_idx}", [new_row])
+    if existing_row_idx:
+        er = all_rows[existing_row_idx - 1]
+        days_worked  = _to_int(er[5]) + 1
+        pob_achieved = _to_int(er[3]) + (eod_data.get("pob") or 0)
+        tc_total     = _to_int(er[12]) + (eod_data.get("tc") or 0)
+        pc_total     = _to_int(er[13]) + (eod_data.get("pc") or 0)
+    else:
+        days_worked  = 1
+        pob_achieved = eod_data.get("pob") or 0
+        tc_total     = eod_data.get("tc") or 0
+        pc_total     = eod_data.get("pc") or 0
+
+    achievement_pct   = round(pob_achieved / monthly_target * 100, 1) if monthly_target else 0
+    daily_avg         = round(pob_achieved / days_worked, 0) if days_worked else 0
+    req_daily         = round((monthly_target - pob_achieved) / remaining_days, 0) if remaining_days else 0
+    projected_end     = round(pob_achieved + daily_avg * remaining_days, 0)
+    on_track          = "Yes" if projected_end >= monthly_target else "No"
+    pc_rate           = round(pc_total / tc_total * 100, 1) if tc_total else 0
+
+    new_row = [
+        mr_name, month, monthly_target, pob_achieved,
+        achievement_pct, days_worked, total_work_days, remaining_days,
+        daily_avg, req_daily, projected_end,
+        on_track, tc_total, pc_total, pc_rate
+    ]
+
+    if existing_row_idx:
+        ws.update(f"A{existing_row_idx}:O{existing_row_idx}", [new_row])
         print(f"  ✓ MR summary updated — {mr_name} | {month}")
     else:
-        row = [
-            mr_name, month,
-            eod_data.get("tc", 0),
-            eod_data.get("pc", 0),
-            eod_data.get("pob", 0),
-            1,
-            slip_count,
-            order_count,
-            ts,
-        ]
-        ws.append_row(row)
+        ws.append_row(new_row)
         print(f"  ✓ MR summary created — {mr_name} | {month}")
 
 
